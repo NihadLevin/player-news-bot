@@ -1,53 +1,58 @@
 """
-Player news bot (GDELT version)
--------------------------------
-Searches the GDELT DOC 2.0 API (free, no key, worldwide news in 65+ languages,
-updated every ~15 min) for the players listed in players.json, drops anything
-published by Bosnian sources, and posts new articles to a Discord channel.
+Player news bot (Google News RSS + Bing News RSS)
+-------------------------------------------------
+Searches Google News and Bing News (both RSS, no API key, no registration) for the
+people listed in players.json, drops anything published by Bosnian portals, merges
+the results (same story from both engines is posted once) and posts new articles to
+a Discord channel via webhook.
 
 State (already posted articles) is kept in seen.json, which the GitHub Action
 commits back to the repo after every run.
 """
 
 import hashlib
+import html
 import json
 import os
 import re
 import sys
 import time
 import unicodedata
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
+from email.utils import parsedate_to_datetime
+from urllib.parse import parse_qs, quote_plus, urlparse
 
 import requests
 
 CONFIG_FILE = "players.json"
 SEEN_FILE = "seen.json"
-GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 MAX_SEEN = 3000              # keep the seen list from growing forever
 FIRST_RUN_HOURS = 7 * 24     # first run: post everything from the last week
-GDELT_PAUSE = 10             # GDELT asks for max. 1 request every 5 seconds (we stay well below)
-RETRY_WAITS = [20, 40, 60, 90]  # waits after "Too Many Requests"
-MAX_QUERY_LEN = 250          # GDELT rejects long queries; too-long ones are split automatically
-HEADERS = {"User-Agent": "player-news-bot"}
-COUNTRY_FILTER_OK = True     # set to False if GDELT rejects "-sourcecountry:bk"
+MAX_QUERY_LEN = 300          # several names are combined into one search
+PAUSE = 2                    # seconds between requests, to stay polite
+RETRY_WAITS = [10, 30, 60]   # waits after "Too Many Requests" / "Service Unavailable"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+    "Accept": "application/rss+xml, application/xml, text/xml",
+}
 
-# Second safety net: Bosnian portals that don't use a .ba domain.
-# (Country filter + all .ba domains are handled automatically.)
+# Bosnian portals that do NOT use a .ba domain (all .ba domains are blocked automatically).
 BLOCKED_DOMAINS = {
     "nezavisne.com", "rtvbn.com", "atvbl.com", "srpskainfo.com", "bljesak.info",
     "hercegovina.info", "mostarski.info", "zurnal.info", "glassrpske.com",
     "rtrs.tv", "6yka.com", "bih-x.info",
 }
-
-# Language names as GDELT returns them -> flag for the Discord post
-LANG_FLAGS = {
-    "English": "🇬🇧", "German": "🇩🇪", "Italian": "🇮🇹", "Turkish": "🇹🇷",
-    "Croatian": "🇭🇷", "Serbian": "🇷🇸", "Spanish": "🇪🇸", "French": "🇫🇷",
-    "Portuguese": "🇵🇹", "Dutch": "🇳🇱", "Arabic": "🇸🇦", "Slovenian": "🇸🇮",
-    "Russian": "🇷🇺", "Polish": "🇵🇱", "Greek": "🇬🇷", "Swedish": "🇸🇪",
+# Bosnian portal names, for Google items where only the name is known
+BLOCKED_NAMES = {
+    "klix", "sport.ba", "sportsport", "avaz", "dnevni avaz", "n1 bih", "faktor",
+    "hayat", "oslobođenje", "oslobodjenje", "nezavisne novine", "bljesak", "rtrs",
+    "bhrt", "federalna", "istraga", "raport", "depo portal", "radio sarajevo",
+    "srpskainfo", "glas srpske", "atv", "bn televizija", "hercegovina.info",
 }
 
+
+# ---------------------------------------------------------------- helpers
 
 def load_json(path, default):
     if not os.path.exists(path):
@@ -61,26 +66,9 @@ def save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def clean_domain(d):
-    d = (d or "").lower()
-    if "/" in d:
-        d = urlparse(d).netloc or d
-    return d[4:] if d.startswith("www.") else d
-
-
-def is_bosnian(article, extra_blocked):
-    if "bosnia" in (article.get("sourcecountry") or "").lower():
-        return True
-    d = clean_domain(article.get("domain") or article.get("url"))
-    if d.endswith(".ba"):
-        return True
-    return any(d == b or d.endswith("." + b) for b in BLOCKED_DOMAINS | extra_blocked)
-
-
-def normalize(text):
-    """Lowercase, strip accents and punctuation – used to spot the same story twice."""
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+def domain_of(url):
+    host = urlparse(url or "").netloc.lower().split(":")[0]
+    return host[4:] if host.startswith("www.") else host
 
 
 def ascii_name(name):
@@ -89,10 +77,45 @@ def ascii_name(name):
     return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
 
 
+def normalize(text):
+    """Lowercase, strip accents and punctuation – used for matching and duplicates."""
+    return re.sub(r"[^a-z0-9]+", " ", ascii_name(text or "").lower()).strip()
+
+
+def strip_tags(text):
+    return html.unescape(re.sub(r"<[^>]+>", " ", text or ""))
+
+
+def is_bosnian(item, extra_blocked):
+    d = item["domain"]
+    if d.endswith(".ba"):
+        return True
+    if any(d == b or d.endswith("." + b) for b in BLOCKED_DOMAINS | extra_blocked):
+        return True
+    name = (item["source"] or "").lower()
+    return bool(re.search(r"\.ba\b", name)) or name.strip() in BLOCKED_NAMES
+
+
+def parse_date(s):
+    try:
+        dt = parsedate_to_datetime(s) if s else None
+    except (TypeError, ValueError):
+        return None
+    if dt and dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def local(tag):
+    """XML tag without namespace: '{ns}Source' -> 'Source'."""
+    return tag.split("}")[-1]
+
+
+# ---------------------------------------------------------------- queries
+
 def all_names(person):
     names = [person["name"]] + person.get("aliases", [])
-    # add the version without č/ć/š/ž/đ automatically
-    for n in list(names):
+    for n in list(names):  # add the version without č/ć/š/ž/đ automatically
         a = ascii_name(n)
         if a not in names:
             names.append(a)
@@ -110,15 +133,14 @@ def make_query(members, context):
 
 
 def build_groups(people):
-    """Put many people into one GDELT query (fewer requests = no 'Too Many Requests').
-    People are grouped by their 'context' words; the club searches come last."""
+    """Combine several people into one search (fewer requests). People are grouped
+    by their 'context' words; the club searches come last."""
     buckets = {}
     for p in people:
         key = (p.get("role") == "Klub", tuple(p.get("context") or []))
         buckets.setdefault(key, []).append(p)
-
     groups = []
-    for (is_club, context), members in sorted(buckets.items(), key=lambda kv: kv[0][0]):
+    for (_, context), members in sorted(buckets.items(), key=lambda kv: kv[0][0]):
         chunk = []
         for p in members:
             if chunk and len(make_query(chunk + [p], context)) > MAX_QUERY_LEN:
@@ -130,103 +152,120 @@ def build_groups(people):
     return groups
 
 
-class QueryTooLong(Exception):
-    pass
+# ---------------------------------------------------------------- fetching
 
-
-def gdelt_get(params):
-    """GET with patient retries – GitHub runners share IPs, so GDELT often says 429."""
-    for wait in RETRY_WAITS:
-        r = requests.get(GDELT_URL, params=params, headers=HEADERS, timeout=40)
-        if r.status_code != 429:
+def http_get(url):
+    for wait in RETRY_WAITS + [None]:
+        r = requests.get(url, headers=HEADERS, timeout=30)
+        if r.status_code not in (429, 503) or wait is None:
             r.raise_for_status()
             return r
-        print(f"   GDELT busy (429), waiting {wait}s…")
+        print(f"   busy ({r.status_code}), waiting {wait}s…")
         time.sleep(wait)
-    r.raise_for_status()
 
 
-def gdelt_search(query, hours):
-    """Returns a list of article dicts. Tries to exclude Bosnian sources already in
-    the query; if GDELT rejects that operator, falls back to filtering locally."""
-    global COUNTRY_FILTER_OK
-    variants = [query + " -sourcecountry:bk", query] if COUNTRY_FILTER_OK else [query]
-    for q in variants:
-        r = gdelt_get({
-            "query": q,
-            "mode": "ArtList",
-            "format": "json",
-            "maxrecords": 250,
-            "sort": "DateDesc",
-            "timespan": f"{hours}h",
+def google_news(query, edition, hours):
+    days = max(1, -(-hours // 24))  # round up
+    url = (
+        "https://news.google.com/rss/search?q=" + quote_plus(f"{query} when:{days}d")
+        + f"&hl={edition['hl']}&gl={edition['gl']}&ceid={edition['ceid']}"
+    )
+    root = ET.fromstring(http_get(url).content)
+    items = []
+    for it in root.iter("item"):
+        src = it.find("source")
+        source = (src.text or "").strip() if src is not None else ""
+        title = (it.findtext("title") or "").strip()
+        if source and title.endswith(" - " + source):  # Google appends " - Source"
+            title = title[: -len(" - " + source)]
+        items.append({
+            "title": title,
+            "link": (it.findtext("link") or "").strip(),
+            "source": source,
+            "domain": domain_of(src.get("url", "")) if src is not None else "",
+            "published": parse_date(it.findtext("pubDate")),
+            "text": strip_tags(it.findtext("description")),
+            "image": None,
+            "label": edition["label"],
         })
-        text = r.text.strip()
-        if not text or text == "{}":
-            return []
-        try:
-            return r.json().get("articles", [])
-        except ValueError:
-            # GDELT answers errors as plain text (e.g. invalid country, query too long)
-            print(f"   GDELT said: {text[:150]}")
-            if "-sourcecountry" in q and "ountry" in text:
-                COUNTRY_FILTER_OK = False  # don't try it again
-                time.sleep(GDELT_PAUSE)
-                continue
-            if "too short or too long" in text:
-                raise QueryTooLong()
-            return []
-    return []
+    return items
 
 
-def who_is_it(art, members):
-    """Which people from this query does the article mention? Checks title + URL."""
+def unwrap_bing(link):
+    """bing.com/news/apiclick.aspx?...&url=<real url> -> real url"""
+    u = urlparse(link)
+    if u.netloc.endswith("bing.com") and "apiclick" in u.path:
+        return parse_qs(u.query).get("url", [link])[0]
+    return link
+
+
+def bing_news(query, market):
+    url = (
+        "https://www.bing.com/news/search?format=rss&q=" + quote_plus(query)
+        + '&qft=interval%3d"8"'          # last week; exact age is filtered later
+        + f"&setmkt={market['mkt']}&setlang={market['mkt'].split('-')[0]}"
+    )
+    root = ET.fromstring(http_get(url).content)
+    items = []
+    for it in root.iter("item"):
+        extra = {local(c.tag): (c.text or "").strip() for c in it}
+        link = unwrap_bing(extra.get("link", ""))
+        image = extra.get("Image") or None
+        if image and image.startswith("http://"):
+            image = "https://" + image[len("http://"):]
+        items.append({
+            "title": extra.get("title", ""),
+            "link": link,
+            "source": extra.get("Source", ""),
+            "domain": domain_of(link),
+            "published": parse_date(extra.get("pubDate")),
+            "text": strip_tags(extra.get("description")),
+            "image": image,
+            "label": market["label"],
+        })
+    return items
+
+
+# ---------------------------------------------------------------- Discord
+
+def who_is_it(item, members):
+    """Which people from this search does the article mention? Checks title + snippet + URL."""
     if len(members) == 1:
         return members
-    hay = " " + normalize((art.get("title") or "") + " " + (art.get("url") or "")) + " "
-    full = [p for p in members if any(f" {normalize(ascii_name(n))} " in hay for n in all_names(p))]
+    hay = " " + normalize(f"{item['title']} {item['text']} {item['link']}") + " "
+    full = [p for p in members if any(f" {normalize(n)} " in hay for n in all_names(p))]
     if full:
         return full
     # foreign headlines often use just the surname ("Hodzic scores")
-    return [p for p in members if f" {normalize(ascii_name(p['name'].split()[-1]))} " in hay]
-
-
-def parse_seendate(s):
-    try:
-        return datetime.strptime(s, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return None
+    return [p for p in members if f" {normalize(p['name'].split()[-1])} " in hay]
 
 
 def describe(people):
-    if not people:  # article matched the search, but we can't tell who exactly
+    if not people:
         return "🔵 **FK Željezničar**  ·  igrač / stručni štab"
     lines = []
     for p in people[:3]:
-        icon = p.get("icon", "👤")
         label = p.get("display", p["name"])
-        lines.append(f"{icon} **{label}**" + (f"  ·  {p['role']}" if p.get("role") else ""))
+        lines.append(f"{p.get('icon', '👤')} **{label}**" + (f"  ·  {p['role']}" if p.get("role") else ""))
     return "\n".join(lines)
 
 
-def post_to_discord(webhook, people, art):
-    lang = art.get("language", "")
-    flag = LANG_FLAGS.get(lang, "🌍")
+def post_to_discord(webhook, people, item):
     embed = {
-        "title": (art.get("title") or "(bez naslova)")[:256],
-        "url": art["url"],
-        "description": f"{describe(people)}\n🗞️ {clean_domain(art.get('domain'))}  ·  {flag} {lang}  ·  {art.get('sourcecountry', '')}",
+        "title": (item["title"] or "(bez naslova)")[:256],
+        "url": item["link"],
+        "description": f"{describe(people)}\n🗞️ {item['source'] or item['domain']}  ·  {item['label']}",
         "color": 0x1E4FA3,
     }
-    if art.get("socialimage"):
-        embed["thumbnail"] = {"url": art["socialimage"]}
-    seen_at = parse_seendate(art.get("seendate"))
-    if seen_at:
-        embed["timestamp"] = seen_at.isoformat()
+    if item["image"]:
+        embed["thumbnail"] = {"url": item["image"]}
+    if item["published"]:
+        embed["timestamp"] = item["published"].astimezone(timezone.utc).isoformat()
     payload = {"username": "Vijesti o igračima", "embeds": [embed]}
 
     for _ in range(4):
         r = requests.post(webhook, json=payload, timeout=20)
-        if r.status_code == 429:  # rate limited – wait and retry
+        if r.status_code == 429:  # Discord rate limit – wait and retry
             time.sleep(float(r.json().get("retry_after", 2)) + 0.5)
             continue
         if r.status_code == 400 and "thumbnail" in embed:  # bad image URL – retry without it
@@ -236,6 +275,8 @@ def post_to_discord(webhook, people, art):
         return
     raise RuntimeError("Discord rejected the post")
 
+
+# ---------------------------------------------------------------- main
 
 def main():
     webhook = os.environ.get("DISCORD_WEBHOOK_URL")
@@ -250,59 +291,51 @@ def main():
     seen = load_json(SEEN_FILE, [])
     first_run = not seen  # nothing posted yet (also true if an earlier run found nothing)
     seen_set = set(seen)
-    extra_blocked = {clean_domain(d) for d in config.get("extra_blocked_domains", [])}
-    only_langs = {l.lower() for l in config.get("only_languages", [])}
+    extra_blocked = {domain_of("https://" + d) or d for d in config.get("extra_blocked_domains", [])}
     hours = FIRST_RUN_HOURS if first_run else int(config.get("max_age_hours", 48))
+    oldest = datetime.now(timezone.utc) - timedelta(hours=hours)
     if first_run:
         print("First run → posting all news from the last 7 days.")
 
+    sources = [("Google", e, lambda q, e=e: google_news(q, e, hours)) for e in config.get("google_editions", [])]
+    sources += [("Bing", m, lambda q, m=m: bing_news(q, m)) for m in config.get("bing_markets", [])]
     groups = build_groups(config["players"])
-    print(f"{len(config['players'])} people in {len(groups)} searches")
+    print(f"{len(config['players'])} people in {len(groups)} searches × {len(sources)} sources")
 
-    queue = list(groups)
-    first = True
-    while queue:
-        members, context = queue.pop(0)
-        if not first:
-            time.sleep(GDELT_PAUSE)
-        first = False
+    for members, context in groups:
         names = ", ".join(p["name"] for p in members)
-        try:
-            articles = gdelt_search(make_query(members, context), hours)
-        except QueryTooLong:
-            if len(members) == 1:
-                print(f"[{names}] query too long even alone – skipped")
+        query = make_query(members, context)
+        candidates, found = {}, 0
+        for engine, src, fetch in sources:
+            time.sleep(PAUSE)
+            try:
+                items = fetch(query)
+            except Exception as e:  # one failing source shouldn't stop the rest
+                print(f"   {engine} {src['label']} failed: {e}")
                 continue
-            half = len(members) // 2
-            print(f"   splitting into {half} + {len(members) - half} people and retrying")
-            queue[:0] = [(members[:half], context), (members[half:], context)]
-            continue
-        except Exception as e:  # one failing search shouldn't stop the rest
-            print(f"[{names}] fetch failed: {e}")
-            continue
-
-        candidates = {}
-        for art in articles:
-            if not art.get("url") or is_bosnian(art, extra_blocked):
-                continue
-            if only_langs and (art.get("language") or "").lower() not in only_langs:
-                continue
-            # same headline on several portals (or a re-translated copy) = one story
-            key = hashlib.sha1(normalize(art.get("title") or art["url"]).encode()).hexdigest()[:16]
-            if key in seen_set or key in candidates:
-                continue
-            candidates[key] = art
+            found += len(items)
+            for item in items:
+                if not item["link"] or is_bosnian(item, extra_blocked):
+                    continue
+                if item["published"] and item["published"] < oldest:
+                    continue
+                # same headline from Google + Bing, or on several portals = one story
+                key = hashlib.sha1(normalize(item["title"] or item["link"]).encode()).hexdigest()[:16]
+                if key in seen_set or key in candidates:
+                    continue
+                candidates[key] = item
 
         # oldest first, so Discord shows them in chronological order
-        ordered = sorted(candidates.items(), key=lambda kv: kv[1].get("seendate", ""))
-        print(f"[{names}] {len(articles)} found, {len(ordered)} new to post")
-        for key, art in ordered:
-            people = who_is_it(art, members)
+        far_past = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        ordered = sorted(candidates.items(), key=lambda kv: kv[1]["published"] or far_past)
+        print(f"[{names}] {found} found, {len(ordered)} new to post")
+        for key, item in ordered:
+            people = who_is_it(item, members)
             if dry_run:
                 who = ", ".join(p["name"] for p in people) or "?"
-                print(f"   - {art.get('title')}  ({clean_domain(art.get('domain'))}, {art.get('language')}) → {who}")
+                print(f"   - {item['title']}  ({item['source'] or item['domain']}, {item['label']}) → {who}")
             else:
-                post_to_discord(webhook, people, art)
+                post_to_discord(webhook, people, item)
                 time.sleep(1)
             seen_set.add(key)
             seen.append(key)
