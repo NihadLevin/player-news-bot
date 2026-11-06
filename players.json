@@ -1,0 +1,326 @@
+{
+  "max_age_hours": 48,
+  "players": [
+    {
+      "name": "Tarik Abdulahović",
+      "role": "Igrač #1",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Marin Karamarko",
+      "role": "Igrač #4",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Amar Ibrišimović",
+      "role": "Igrač #5",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Aleksa Pejić",
+      "role": "Igrač #6",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Yacouba Dabo",
+      "role": "Igrač #7",
+      "aliases": [],
+      "context": [
+        "Željezničar",
+        "Zeljeznicar",
+        "Sarajevo"
+      ]
+    },
+    {
+      "name": "Afan Fočo",
+      "role": "Igrač #8",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Aldian Korora",
+      "role": "Igrač #9",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Madžid Šošić",
+      "role": "Igrač #10",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Matej Cvetanoski",
+      "role": "Igrač #11",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Afonso Vitorino",
+      "role": "Igrač #14",
+      "aliases": [],
+      "context": [
+        "Željezničar",
+        "Zeljeznicar",
+        "Sarajevo"
+      ]
+    },
+    {
+      "name": "Bojan Nastić",
+      "role": "Igrač #15",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Dženan Šabić",
+      "role": "Igrač #16",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Ante Kuliš",
+      "role": "Igrač #19",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Giovanni Troupée",
+      "role": "Igrač #20",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Admir Gojak",
+      "role": "Igrač #22",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Eldar Dragović",
+      "role": "Igrač #23",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Ajdin Raščić",
+      "role": "Igrač #24",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Daris Kelmendi",
+      "role": "Igrač #25",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Amar Hamidović",
+      "role": "Igrač #26",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Deni Milošević",
+      "role": "Igrač #27",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Jonathan Freeman",
+      "role": "Igrač #28",
+      "aliases": [],
+      "context": [
+        "Željezničar",
+        "Zeljeznicar",
+        "Sarajevo"
+      ]
+    },
+    {
+      "name": "Muharem Husković",
+      "role": "Igrač #29",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Marko Karamarko",
+      "role": "Igrač #30",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Sandro Jovanović",
+      "role": "Igrač #32",
+      "aliases": [],
+      "context": [
+        "Željezničar",
+        "Zeljeznicar",
+        "Sarajevo"
+      ]
+    },
+    {
+      "name": "Collin Seedorf",
+      "role": "Igrač #33",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Doruk Tuğrul",
+      "role": "Igrač #34",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Ángel Jiménez",
+      "role": "Igrač #41",
+      "aliases": [],
+      "context": [
+        "Željezničar",
+        "Zeljeznicar",
+        "Sarajevo"
+      ]
+    },
+    {
+      "name": "Amar Zahirović",
+      "role": "Igrač #46",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Albin Rahić",
+      "role": "Igrač #47",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Feđa Pervan",
+      "role": "Igrač #48",
+      "aliases": [
+        "Feda Pervan"
+      ],
+      "context": []
+    },
+    {
+      "name": "Gabriel Cunha",
+      "role": "Igrač #49",
+      "aliases": [],
+      "context": [
+        "Željezničar",
+        "Zeljeznicar",
+        "Sarajevo"
+      ]
+    },
+    {
+      "name": "Eldar Godinjak",
+      "role": "Igrač #50",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Emil Bujak",
+      "role": "Igrač #51",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Armin Hodžić",
+      "role": "Igrač #55",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Samir Radovac",
+      "role": "Igrač #88",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Rodrigo Piloto",
+      "role": "Igrač #90",
+      "aliases": [],
+      "context": [
+        "Željezničar",
+        "Zeljeznicar",
+        "Sarajevo"
+      ]
+    },
+    {
+      "name": "Alvin Ćosić",
+      "role": "Igrač #99",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "David Muslera Rodriguez",
+      "role": "Šef stručnog štaba",
+      "aliases": [
+        "David Muslera Rodríguez",
+        "David Muslera"
+      ],
+      "context": []
+    },
+    {
+      "name": "Sabit Šljivo",
+      "role": "Trener",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Kenan Hasagić",
+      "role": "Trener golmana",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "Emil Šabanović",
+      "role": "Videoanalitičar",
+      "aliases": [],
+      "context": [
+        "Željezničar",
+        "Zeljeznicar",
+        "Sarajevo"
+      ]
+    },
+    {
+      "name": "Matic Lukman Čoko",
+      "role": "Kondicioni trener",
+      "aliases": [
+        "Matic Lukman"
+      ],
+      "context": []
+    },
+    {
+      "name": "Aleksandar Kosorić",
+      "role": "Tim menadžer",
+      "aliases": [],
+      "context": []
+    },
+    {
+      "name": "FK Željezničar",
+      "display": "FK Željezničar",
+      "icon": "🔵",
+      "role": "Klub",
+      "aliases": [
+        "Željezničar Sarajevo",
+        "FK Željezničar Sarajevo"
+      ],
+      "context": []
+    },
+    {
+      "name": "Željezničar",
+      "display": "FK Željezničar",
+      "icon": "🔵",
+      "role": "Klub",
+      "aliases": [],
+      "context": [
+        "Sarajevo",
+        "Grbavica"
+      ]
+    }
+  ],
+  "only_languages": [],
+  "extra_blocked_domains": []
+}
