@@ -25,8 +25,10 @@ CONFIG_FILE = "players.json"
 SEEN_FILE = "seen.json"
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 MAX_SEEN = 3000              # keep the seen list from growing forever
-FIRST_RUN_HOURS = 7 * 24     # very first run: post everything from the last week
-GDELT_PAUSE = 6              # GDELT asks for max. 1 request every 5 seconds
+FIRST_RUN_HOURS = 7 * 24     # first run: post everything from the last week
+GDELT_PAUSE = 10             # GDELT asks for max. 1 request every 5 seconds (we stay well below)
+RETRY_WAITS = [20, 40, 60, 90]  # waits after "Too Many Requests"
+MAX_QUERY_LEN = 450          # keep each combined GDELT query reasonably short
 HEADERS = {"User-Agent": "player-news-bot"}
 COUNTRY_FILTER_OK = True     # set to False if GDELT rejects "-sourcecountry:bk"
 
@@ -87,20 +89,55 @@ def ascii_name(name):
     return unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
 
 
-def build_query(player):
-    names = [player["name"]] + player.get("aliases", [])
+def all_names(person):
+    names = [person["name"]] + person.get("aliases", [])
     # add the version without č/ć/š/ž/đ automatically
     for n in list(names):
         a = ascii_name(n)
         if a not in names:
             names.append(a)
-    q = "(" + " OR ".join(f'"{n}"' for n in names) + ")" if len(names) > 1 else f'"{names[0]}"'
-    context = player.get("context") or []
-    if len(context) == 1:
-        q += f' "{context[0]}"'
-    elif context:
-        q += " (" + " OR ".join(f'"{c}"' for c in context) + ")"
-    return q
+    return names
+
+
+def or_group(terms):
+    terms = [f'"{t}"' for t in terms]
+    return terms[0] if len(terms) == 1 else "(" + " OR ".join(terms) + ")"
+
+
+def build_groups(people):
+    """Put many people into one GDELT query (fewer requests = no 'Too Many Requests').
+    People are grouped by their 'context' words; the club searches come last."""
+    buckets = {}
+    for p in people:
+        key = (p.get("role") == "Klub", tuple(p.get("context") or []))
+        buckets.setdefault(key, []).append(p)
+
+    groups = []
+    for (is_club, context), members in sorted(buckets.items(), key=lambda kv: kv[0][0]):
+        ctx = (" " + or_group(list(context))) if context else ""
+        chunk, terms = [], []
+        for p in members:
+            new_terms = terms + all_names(p)
+            if chunk and len(or_group(new_terms)) + len(ctx) > MAX_QUERY_LEN:
+                groups.append((chunk, or_group(terms) + ctx))
+                chunk, new_terms = [], all_names(p)
+            chunk.append(p)
+            terms = new_terms
+        if chunk:
+            groups.append((chunk, or_group(terms) + ctx))
+    return groups
+
+
+def gdelt_get(params):
+    """GET with patient retries – GitHub runners share IPs, so GDELT often says 429."""
+    for wait in RETRY_WAITS:
+        r = requests.get(GDELT_URL, params=params, headers=HEADERS, timeout=40)
+        if r.status_code != 429:
+            r.raise_for_status()
+            return r
+        print(f"   GDELT busy (429), waiting {wait}s…")
+        time.sleep(wait)
+    r.raise_for_status()
 
 
 def gdelt_search(query, hours):
@@ -109,31 +146,40 @@ def gdelt_search(query, hours):
     global COUNTRY_FILTER_OK
     variants = [query + " -sourcecountry:bk", query] if COUNTRY_FILTER_OK else [query]
     for q in variants:
-        params = {
+        r = gdelt_get({
             "query": q,
             "mode": "ArtList",
             "format": "json",
             "maxrecords": 250,
             "sort": "DateDesc",
             "timespan": f"{hours}h",
-        }
-        r = requests.get(GDELT_URL, params=params, headers=HEADERS, timeout=30)
-        if r.status_code == 429:
-            time.sleep(15)
-            r = requests.get(GDELT_URL, params=params, headers=HEADERS, timeout=30)
-        r.raise_for_status()
+        })
         text = r.text.strip()
         if not text or text == "{}":
             return []
         try:
             return r.json().get("articles", [])
         except ValueError:
-            # GDELT answers errors as plain text (e.g. invalid country) -> try next variant
+            # GDELT answers errors as plain text (e.g. invalid country, query too long)
             print(f"   GDELT said: {text[:150]}")
-            if "-sourcecountry" in q:
-                COUNTRY_FILTER_OK = False  # don't try it again for the other players
-            time.sleep(GDELT_PAUSE)
+            if "-sourcecountry" in q and "ountry" in text:
+                COUNTRY_FILTER_OK = False  # don't try it again
+                time.sleep(GDELT_PAUSE)
+                continue
+            return []
     return []
+
+
+def who_is_it(art, members):
+    """Which people from this query does the article mention? Checks title + URL."""
+    if len(members) == 1:
+        return members
+    hay = " " + normalize((art.get("title") or "") + " " + (art.get("url") or "")) + " "
+    full = [p for p in members if any(f" {normalize(ascii_name(n))} " in hay for n in all_names(p))]
+    if full:
+        return full
+    # foreign headlines often use just the surname ("Hodzic scores")
+    return [p for p in members if f" {normalize(ascii_name(p['name'].split()[-1]))} " in hay]
 
 
 def parse_seendate(s):
@@ -143,16 +189,24 @@ def parse_seendate(s):
         return None
 
 
-def post_to_discord(webhook, person, art):
+def describe(people):
+    if not people:  # article matched the search, but we can't tell who exactly
+        return "🔵 **FK Željezničar**  ·  igrač / stručni štab"
+    lines = []
+    for p in people[:3]:
+        icon = p.get("icon", "👤")
+        label = p.get("display", p["name"])
+        lines.append(f"{icon} **{label}**" + (f"  ·  {p['role']}" if p.get("role") else ""))
+    return "\n".join(lines)
+
+
+def post_to_discord(webhook, people, art):
     lang = art.get("language", "")
     flag = LANG_FLAGS.get(lang, "🌍")
-    icon = person.get("icon", "👤")
-    label = person.get("display", person["name"])
-    who = f"{icon} **{label}**" + (f"  ·  {person['role']}" if person.get("role") else "")
     embed = {
         "title": (art.get("title") or "(bez naslova)")[:256],
         "url": art["url"],
-        "description": f"{who}\n🗞️ {clean_domain(art.get('domain'))}  ·  {flag} {lang}  ·  {art.get('sourcecountry', '')}",
+        "description": f"{describe(people)}\n🗞️ {clean_domain(art.get('domain'))}  ·  {flag} {lang}  ·  {art.get('sourcecountry', '')}",
         "color": 0x1E4FA3,
     }
     if art.get("socialimage"):
@@ -162,10 +216,10 @@ def post_to_discord(webhook, person, art):
         embed["timestamp"] = seen_at.isoformat()
     payload = {"username": "Vijesti o igračima", "embeds": [embed]}
 
-    for _ in range(3):
+    for _ in range(4):
         r = requests.post(webhook, json=payload, timeout=20)
         if r.status_code == 429:  # rate limited – wait and retry
-            time.sleep(float(r.json().get("retry_after", 2)))
+            time.sleep(float(r.json().get("retry_after", 2)) + 0.5)
             continue
         if r.status_code == 400 and "thumbnail" in embed:  # bad image URL – retry without it
             embed.pop("thumbnail")
@@ -185,8 +239,8 @@ def main():
     if not config:
         sys.exit(f"{CONFIG_FILE} missing")
 
-    first_run = not os.path.exists(SEEN_FILE)
     seen = load_json(SEEN_FILE, [])
+    first_run = not seen  # nothing posted yet (also true if an earlier run found nothing)
     seen_set = set(seen)
     extra_blocked = {clean_domain(d) for d in config.get("extra_blocked_domains", [])}
     only_langs = {l.lower() for l in config.get("only_languages", [])}
@@ -194,14 +248,17 @@ def main():
     if first_run:
         print("First run → posting all news from the last 7 days.")
 
-    for i, player in enumerate(config["players"]):
+    groups = build_groups(config["players"])
+    print(f"{len(config['players'])} people in {len(groups)} searches")
+
+    for i, (members, query) in enumerate(groups):
         if i:
             time.sleep(GDELT_PAUSE)
-        query = build_query(player)
+        names = ", ".join(p["name"] for p in members)
         try:
             articles = gdelt_search(query, hours)
-        except Exception as e:  # one failing player shouldn't stop the rest
-            print(f"[{player['name']}] fetch failed: {e}")
+        except Exception as e:  # one failing search shouldn't stop the rest
+            print(f"[{names}] fetch failed: {e}")
             continue
 
         candidates = {}
@@ -218,17 +275,17 @@ def main():
 
         # oldest first, so Discord shows them in chronological order
         ordered = sorted(candidates.items(), key=lambda kv: kv[1].get("seendate", ""))
-
-        print(f"[{player['name']}] {len(articles)} found, {len(ordered)} new to post")
+        print(f"[{names}] {len(articles)} found, {len(ordered)} new to post")
         for key, art in ordered:
+            people = who_is_it(art, members)
             if dry_run:
-                print(f"   - {art.get('title')}  ({clean_domain(art.get('domain'))}, {art.get('language')})")
+                who = ", ".join(p["name"] for p in people) or "?"
+                print(f"   - {art.get('title')}  ({clean_domain(art.get('domain'))}, {art.get('language')}) → {who}")
             else:
-                post_to_discord(webhook, player, art)
+                post_to_discord(webhook, people, art)
                 time.sleep(1)
-            if key not in seen_set:
-                seen_set.add(key)
-                seen.append(key)
+            seen_set.add(key)
+            seen.append(key)
 
     save_json(SEEN_FILE, seen[-MAX_SEEN:])
 
