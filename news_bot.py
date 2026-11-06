@@ -41,15 +41,43 @@ HEADERS = {
 BLOCKED_DOMAINS = {
     "nezavisne.com", "rtvbn.com", "atvbl.com", "srpskainfo.com", "bljesak.info",
     "hercegovina.info", "mostarski.info", "zurnal.info", "glassrpske.com",
-    "rtrs.tv", "6yka.com", "bih-x.info",
+    "rtrs.tv", "6yka.com", "bih-x.info", "jabuka.tv",
 }
 # Bosnian portal names, for Google items where only the name is known
 BLOCKED_NAMES = {
     "klix", "sport.ba", "sportsport", "avaz", "dnevni avaz", "n1 bih", "faktor",
     "hayat", "oslobođenje", "oslobodjenje", "nezavisne novine", "bljesak", "rtrs",
     "bhrt", "federalna", "istraga", "raport", "depo portal", "radio sarajevo",
-    "srpskainfo", "glas srpske", "atv", "bn televizija", "hercegovina.info",
+    "srpskainfo", "glas srpske", "atv", "bn televizija", "hercegovina.info", "jabuka.tv", "jabuka tv",
 }
+
+
+# Not real articles: player profiles, live scores / results, betting & predictions.
+# Matched as part of the domain, so "transfermarkt" blocks .de, .com, .co.uk ...
+JUNK_SITES = [
+    "transfermarkt", "sofascore", "flashscore", "livescore", "soccerway", "fotmob",
+    "besoccer", "footystats", "zerozero", "playmakerstats", "soccer24", "aiscore",
+    "365scores", "worldfootball", "fbref", "sportsgambler", "oddsportal", "betexplorer",
+    "forebet", "windrawwin", "predictz", "sportytrader", "scores24", "scoreaxis",
+    "thesportsdb", "footballdatabase", "national-football-teams", "eurosport.com/football/livescore",
+    "bet365", "betway", "1xbet", "bwin", "mozzartbet", "meridianbet", "admiralbet", "wwin",
+    "superbet", "williamhill", "unibet", "betfair", "betano", "sportybet", "kladionic",
+    "odds", "betting", "tipster", "prediction", "livesport", "rezultati.com", "scoreboard",
+]
+# Words in the title (or link) that mean "not a real article"
+JUNK_WORDS = [
+    "prediction", "predictions", "odds", "betting", "betting tips", "tips", "best bets",
+    "kvote", "kvota", "tipovi", "tip dana", "prognoza", "prognoze", "kladionica",
+    "quote", "pronostico", "pronostici", "prognose", "wettquoten", "tahmin", "iddaa",
+    "live score", "livescore", "live scores", "results today", "rezultati uzivo", "uzivo rezultat",
+    "h2h", "head to head", "player profile", "profile", "profil", "spielerprofil",
+    "market value", "trzisna vrijednost", "stats", "statistics", "career stats",
+]
+JUNK_URL_PARTS = [
+    "/profil", "/spieler/", "/player/", "/players/", "/jugador/", "/giocatore/",
+    "/livescore", "/live-score", "/odds", "/betting", "/prediction", "/h2h",
+    "/match/", "/fixtures", "/results", "/rezultati", "/kvote", "/tipovi",
+]
 
 
 # ---------------------------------------------------------------- helpers
@@ -94,6 +122,20 @@ def is_bosnian(item, extra_blocked):
         return True
     name = (item["source"] or "").lower()
     return bool(re.search(r"\.ba\b", name)) or name.strip() in BLOCKED_NAMES
+
+
+def is_junk(item, extra_junk_sites, extra_junk_words):
+    """Profiles, live scores, results tables, betting – anything that isn't a real article."""
+    d = item["domain"] + " " + (item["source"] or "").lower()
+    if any(s in d for s in JUNK_SITES + extra_junk_sites):
+        return True
+    link = (item["link"] or "").lower()
+    if "news.google.com" not in link and any(p in link for p in JUNK_URL_PARTS):
+        return True
+    title = " " + normalize(item["title"]) + " "
+    if any(f" {normalize(w)} " in title for w in JUNK_WORDS + extra_junk_words):
+        return True
+    return len(item["title"].split()) < 4  # "Admir Gojak", "Gojak - Stats" … not an article
 
 
 def parse_date(s):
@@ -314,6 +356,8 @@ def main():
     first_run = not seen  # nothing posted yet (also true if an earlier run found nothing)
     seen_set = set(seen)
     extra_blocked = {domain_of("https://" + d) or d for d in config.get("extra_blocked_domains", [])}
+    extra_junk_sites = [s.lower() for s in config.get("extra_junk_sites", [])]
+    extra_junk_words = config.get("extra_junk_words", [])
     hours = FIRST_RUN_HOURS if first_run else int(config.get("max_age_hours", 48))
     oldest = datetime.now(timezone.utc) - timedelta(hours=hours)
     if first_run:
@@ -338,6 +382,8 @@ def main():
             found += len(items)
             for item in items:
                 if not item["link"] or is_bosnian(item, extra_blocked):
+                    continue
+                if is_junk(item, extra_junk_sites, extra_junk_words):
                     continue
                 if item["published"] and item["published"] < oldest:
                     continue
