@@ -321,6 +321,41 @@
       ]
     }
   ],
-  "only_languages": [],
+  "google_editions": [
+    {
+      "label": "🇬🇧 Google EN",
+      "hl": "en-GB",
+      "gl": "GB",
+      "ceid": "GB:en"
+    },
+    {
+      "label": "🇭🇷 Google HR",
+      "hl": "hr",
+      "gl": "HR",
+      "ceid": "HR:hr"
+    },
+    {
+      "label": "🇷🇸 Google SR",
+      "hl": "sr",
+      "gl": "RS",
+      "ceid": "RS:sr"
+    },
+    {
+      "label": "🇩🇪 Google DE",
+      "hl": "de",
+      "gl": "DE",
+      "ceid": "DE:de"
+    }
+  ],
+  "bing_markets": [
+    {
+      "label": "🇬🇧 Bing EN",
+      "mkt": "en-GB"
+    },
+    {
+      "label": "🇭🇷 Bing HR",
+      "mkt": "hr-HR"
+    }
+  ],
   "extra_blocked_domains": []
 }
