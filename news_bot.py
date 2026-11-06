@@ -25,6 +25,11 @@ from urllib.parse import parse_qs, quote_plus, urlparse
 
 import requests
 
+try:
+    from googlenewsdecoder import gnewsdecoder  # turns news.google.com links into real ones
+except ImportError:
+    gnewsdecoder = None
+
 CONFIG_FILE = "players.json"
 SEEN_FILE = "seen.json"
 MAX_SEEN = 3000              # keep the seen list from growing forever
@@ -77,6 +82,7 @@ JUNK_URL_PARTS = [
     "/profil", "/spieler/", "/player/", "/players/", "/jugador/", "/giocatore/",
     "/livescore", "/live-score", "/odds", "/betting", "/prediction", "/h2h",
     "/match/", "/fixtures", "/results", "/rezultati", "/kvote", "/tipovi",
+    "/matches/", "/game/", "/live/", "_mtc", "/squad", "/standings", "/table",
 ]
 
 
@@ -135,7 +141,30 @@ def is_junk(item, extra_junk_sites, extra_junk_words):
     title = " " + normalize(item["title"]) + " "
     if any(f" {normalize(w)} " in title for w in JUNK_WORDS + extra_junk_words):
         return True
-    return len(item["title"].split()) < 4  # "Admir Gojak", "Gojak - Stats" … not an article
+    if is_match_page(item["title"]):
+        return True
+    return len(item["title"].split()) < 3  # "Admir Gojak", "Hodžić Armin" … a profile, not an article
+
+
+def is_match_page(title):
+    """'Siroki Brijeg - Zeljeznicar Sarajevo', 'Zeljeznicar vs Velez' = match/score page, not an article."""
+    parts = re.split(r"\s+(?:-|–|—|vs\.?|v\.?)\s+|\s+\d+\s*[-:]\s*\d+\s+", title.strip(), flags=re.I)
+    if len(parts) != 2:
+        return False
+    return all(1 <= len(p.split()) <= 3 and not re.search(r"[?!,]", p) for p in parts)
+
+
+def resolve_google_link(item):
+    """news.google.com/rss/articles/… -> the publisher's real URL (best effort)."""
+    if "news.google.com" not in item["link"] or gnewsdecoder is None:
+        return
+    try:
+        res = gnewsdecoder(item["link"], interval=1)
+        if res.get("status") and res.get("decoded_url"):
+            item["link"] = res["decoded_url"]
+            item["domain"] = domain_of(item["link"]) or item["domain"]
+    except Exception as e:
+        print(f"   could not resolve Google link: {e}")
 
 
 def parse_date(s):
@@ -400,6 +429,11 @@ def main():
         posted = 0
         for key, item in ordered:
             people = who_is_it(item, members)
+            if people:
+                # now that we know the real link, check it once more
+                resolve_google_link(item)
+                if is_bosnian(item, extra_blocked) or is_junk(item, extra_junk_sites, extra_junk_words):
+                    people = []
             if not people:  # not really about our people – skip (not marked as seen,
                 continue    # another search may be the right one for it)
             seen_set.add(key)
