@@ -2,7 +2,7 @@ name: Player news
 
 on:
   schedule:
-    - cron: "0 * * * *"   # every hour (use "0 */3 * * *" if the repo is private)
+    - cron: "0 * * * *"   # every hour (GitHub may run it a bit late)
   workflow_dispatch:       # lets you run it manually from the Actions tab
 
 permissions:
@@ -15,6 +15,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +25,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - run: python news_bot.py
+      - run: python -u news_bot.py
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
