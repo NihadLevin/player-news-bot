@@ -28,7 +28,7 @@ MAX_SEEN = 3000              # keep the seen list from growing forever
 FIRST_RUN_HOURS = 7 * 24     # first run: post everything from the last week
 GDELT_PAUSE = 10             # GDELT asks for max. 1 request every 5 seconds (we stay well below)
 RETRY_WAITS = [20, 40, 60, 90]  # waits after "Too Many Requests"
-MAX_QUERY_LEN = 450          # keep each combined GDELT query reasonably short
+MAX_QUERY_LEN = 250          # GDELT rejects long queries; too-long ones are split automatically
 HEADERS = {"User-Agent": "player-news-bot"}
 COUNTRY_FILTER_OK = True     # set to False if GDELT rejects "-sourcecountry:bk"
 
@@ -104,6 +104,11 @@ def or_group(terms):
     return terms[0] if len(terms) == 1 else "(" + " OR ".join(terms) + ")"
 
 
+def make_query(members, context):
+    terms = [n for p in members for n in all_names(p)]
+    return or_group(terms) + ((" " + or_group(list(context))) if context else "")
+
+
 def build_groups(people):
     """Put many people into one GDELT query (fewer requests = no 'Too Many Requests').
     People are grouped by their 'context' words; the club searches come last."""
@@ -114,18 +119,19 @@ def build_groups(people):
 
     groups = []
     for (is_club, context), members in sorted(buckets.items(), key=lambda kv: kv[0][0]):
-        ctx = (" " + or_group(list(context))) if context else ""
-        chunk, terms = [], []
+        chunk = []
         for p in members:
-            new_terms = terms + all_names(p)
-            if chunk and len(or_group(new_terms)) + len(ctx) > MAX_QUERY_LEN:
-                groups.append((chunk, or_group(terms) + ctx))
-                chunk, new_terms = [], all_names(p)
+            if chunk and len(make_query(chunk + [p], context)) > MAX_QUERY_LEN:
+                groups.append((chunk, context))
+                chunk = []
             chunk.append(p)
-            terms = new_terms
         if chunk:
-            groups.append((chunk, or_group(terms) + ctx))
+            groups.append((chunk, context))
     return groups
+
+
+class QueryTooLong(Exception):
+    pass
 
 
 def gdelt_get(params):
@@ -166,6 +172,8 @@ def gdelt_search(query, hours):
                 COUNTRY_FILTER_OK = False  # don't try it again
                 time.sleep(GDELT_PAUSE)
                 continue
+            if "too short or too long" in text:
+                raise QueryTooLong()
             return []
     return []
 
@@ -251,12 +259,24 @@ def main():
     groups = build_groups(config["players"])
     print(f"{len(config['players'])} people in {len(groups)} searches")
 
-    for i, (members, query) in enumerate(groups):
-        if i:
+    queue = list(groups)
+    first = True
+    while queue:
+        members, context = queue.pop(0)
+        if not first:
             time.sleep(GDELT_PAUSE)
+        first = False
         names = ", ".join(p["name"] for p in members)
         try:
-            articles = gdelt_search(query, hours)
+            articles = gdelt_search(make_query(members, context), hours)
+        except QueryTooLong:
+            if len(members) == 1:
+                print(f"[{names}] query too long even alone – skipped")
+                continue
+            half = len(members) // 2
+            print(f"   splitting into {half} + {len(members) - half} people and retrying")
+            queue[:0] = [(members[:half], context), (members[half:], context)]
+            continue
         except Exception as e:  # one failing search shouldn't stop the rest
             print(f"[{names}] fetch failed: {e}")
             continue
