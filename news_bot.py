@@ -213,8 +213,11 @@ def bing_news(query, market):
         image = extra.get("Image") or None
         if image and image.startswith("http://"):
             image = "https://" + image[len("http://"):]
+        title, source = extra.get("title", ""), extra.get("Source", "")
+        if source and title.endswith(" - " + source):
+            title = title[: -len(" - " + source)]
         items.append({
-            "title": extra.get("title", ""),
+            "title": title,
             "link": link,
             "source": extra.get("Source", ""),
             "domain": domain_of(link),
@@ -228,16 +231,35 @@ def bing_news(query, market):
 
 # ---------------------------------------------------------------- Discord
 
+CLUB_WORDS = ["zeljeznicar", "zeljo", "grbavica"]
+
+
+def has(hay, phrase):
+    return f" {normalize(phrase)} " in hay
+
+
 def who_is_it(item, members):
-    """Which people from this search does the article mention? Checks title + snippet + URL."""
-    if len(members) == 1:
-        return members
-    hay = " " + normalize(f"{item['title']} {item['text']} {item['link']}") + " "
-    full = [p for p in members if any(f" {normalize(n)} " in hay for n in all_names(p))]
-    if full:
-        return full
-    # foreign headlines often use just the surname ("Hodzic scores")
-    return [p for p in members if f" {normalize(p['name'].split()[-1])} " in hay]
+    """Strict check: which people does the article REALLY mention (title + snippet)?
+    Search engines sometimes ignore quotes, so anything that doesn't pass is dropped."""
+    hay = " " + normalize(f"{item['title']} {item['text']}") + " "
+    club_mentioned = any(has(hay, w) for w in CLUB_WORDS)
+    matched = []
+    for p in members:
+        context = p.get("context") or []
+        context_ok = not context or any(has(hay, c) for c in context)
+        if p.get("role") == "Klub":
+            # 'Željezničar' + Sarajevo/Grbavica/FK, or a full club name
+            if any(has(hay, n) for n in all_names(p) if " " in n) or \
+               (has(hay, "zeljeznicar") and (has(hay, "sarajevo") or has(hay, "grbavica") or has(hay, "fk"))):
+                matched.append(p)
+            continue
+        full_name = any(has(hay, n) for n in all_names(p))
+        surname = p["name"].split()[-1]
+        # surname alone ("Gojak scores") only counts if the club is mentioned too
+        surname_ok = len(surname) > 3 and has(hay, surname) and club_mentioned
+        if (full_name or surname_ok) and context_ok:
+            matched.append(p)
+    return matched
 
 
 def describe(people):
@@ -320,7 +342,7 @@ def main():
                 if item["published"] and item["published"] < oldest:
                     continue
                 # same headline from Google + Bing, or on several portals = one story
-                key = hashlib.sha1(normalize(item["title"] or item["link"]).encode()).hexdigest()[:16]
+                key = hashlib.sha1(normalize(re.sub(r"\s+[-–|]\s+[^-–|]{2,40}$", "", item["title"]) or item["link"]).encode()).hexdigest()[:16]
                 if key in seen_set or key in candidates:
                     continue
                 candidates[key] = item
@@ -328,17 +350,22 @@ def main():
         # oldest first, so Discord shows them in chronological order
         far_past = datetime(1970, 1, 1, tzinfo=timezone.utc)
         ordered = sorted(candidates.items(), key=lambda kv: kv[1]["published"] or far_past)
-        print(f"[{names}] {found} found, {len(ordered)} new to post")
+        print(f"[{names}] {found} found, {len(ordered)} new")
+        posted = 0
         for key, item in ordered:
             people = who_is_it(item, members)
+            if not people:  # not really about our people – skip (not marked as seen,
+                continue    # another search may be the right one for it)
+            seen_set.add(key)
+            seen.append(key)
+            posted += 1
             if dry_run:
                 who = ", ".join(p["name"] for p in people) or "?"
                 print(f"   - {item['title']}  ({item['source'] or item['domain']}, {item['label']}) → {who}")
             else:
                 post_to_discord(webhook, people, item)
                 time.sleep(1)
-            seen_set.add(key)
-            seen.append(key)
+        print(f"   posted {posted}, skipped {len(ordered) - posted} unrelated")
 
     save_json(SEEN_FILE, seen[-MAX_SEEN:])
 
